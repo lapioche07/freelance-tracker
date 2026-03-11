@@ -61,7 +61,8 @@ def get_workbook():
         st.secrets["gcp_service_account"], scopes=SCOPES
     )
     client = gspread.authorize(creds)
-    return client.open_by_key(st.secrets["SHEET_ID"])
+    sheet_id = st.secrets.get("SHEET_ID") or st.secrets["gcp_service_account"].get("SHEET_ID")
+    return client.open_by_key(sheet_id)
 
 def get_sheet(tab_name):
     return get_workbook().worksheet(tab_name)
