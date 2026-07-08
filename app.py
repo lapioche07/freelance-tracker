@@ -29,6 +29,20 @@ section[data-testid="stSidebar"] * { color: #E8E8F0 !important; }
 .metric-card .label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
 .metric-card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
 .metric-card .sub   { font-size: 12px; color: #888; margin-top: 4px; }
+.wallet-card {
+    background: #1A1A2E; border: 1px solid #2A2A3E; border-radius: 14px;
+    padding: 22px 20px; margin-bottom: 10px; transition: border-color 0.2s;
+}
+.wallet-card:hover { border-color: #7C6AF7; }
+.wallet-card .wlabel { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 1.2px; }
+.wallet-card .wvalue { font-size: 26px; font-weight: 700; margin-top: 6px; }
+.wallet-card .wicon  { font-size: 24px; margin-bottom: 6px; }
+.tx-row { background:#1A1A2E; border:1px solid #2A2A3E; border-radius:10px; padding:12px 16px; margin-bottom:6px; display:flex; align-items:center; justify-content:space-between; }
+.tx-left .tx-desc { font-weight:600; font-size:14px; }
+.tx-left .tx-meta { font-size:12px; color:#888; margin-top:2px; }
+.tx-amount-out { font-size:15px; font-weight:700; color:#E05C5C; }
+.tx-amount-in  { font-size:15px; font-weight:700; color:#3DAA6D; }
+.tx-amount-transfer { font-size:15px; font-weight:700; color:#7C6AF7; }
 .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; }
 .badge-active   { background:#1a4a2e; color:#3DAA6D; }
 .badge-inactive { background:#3a1a1a; color:#E05C5C; }
@@ -67,11 +81,31 @@ def get_workbook():
 def get_sheet(tab_name):
     return get_workbook().worksheet(tab_name)
 
+def ensure_wallet_tabs():
+    """Create wallet-related tabs in Google Sheets if they don't exist."""
+    wb = get_workbook()
+    existing = [ws.title for ws in wb.worksheets()]
+    
+    if "wallet_balances" not in existing:
+        ws = wb.add_worksheet(title="wallet_balances", rows=10, cols=5)
+        ws.update(values=[["account","balance","updated"]], range_name="A1:C1")
+        default_accounts = [
+            ["baridi", "0", str(date.today())],
+            ["personal_bank", "0", str(date.today())],
+            ["business_bank", "0", str(date.today())],
+            ["cash", "0", str(date.today())],
+        ]
+        ws.update(values=default_accounts, range_name="A2:C5")
+    
+    if "wallet_transactions" not in existing:
+        ws = wb.add_worksheet(title="wallet_transactions", rows=200, cols=8)
+        ws.update(values=[["id","type","account","to_account","amount","description","date","created"]], range_name="A1:H1")
+
 # ─── DATA HELPERS ────────────────────────────────────────────
 HEADERS = {
     "clients":  ["id","name","industry","contact","email","phone","country","status","notes","created"],
     "projects": ["id","name","type","client_id","date","amount","payment_status","work_status","notes","created"],
-    "expenses": ["id","label","category","amount","date"],
+    "wallet_transactions": ["id","type","account","to_account","amount","description","date","created"],
 }
 
 def load(tab):
@@ -108,6 +142,34 @@ def delete_row(tab, record_id):
         return
     ws.delete_rows(row_num)
 
+# ─── WALLET HELPERS ─────────────────────────────────────────
+ACCOUNT_LABELS = {
+    "baridi": ("💳", "Baridi Account", "#5BC4BF"),
+    "personal_bank": ("🏦", "Personal Bank", "#7C6AF7"),
+    "business_bank": ("🏢", "Business Bank", "#3DAA6D"),
+    "cash": ("💵", "Cash", "#F5C842"),
+}
+
+def load_balances():
+    try:
+        ws = get_sheet("wallet_balances")
+        rows = ws.get_all_records()
+        return {r["account"]: float(r.get("balance", 0) or 0) for r in rows}
+    except:
+        return {"baridi": 0, "personal_bank": 0, "business_bank": 0, "cash": 0}
+
+def save_balance(account, new_balance):
+    try:
+        ws = get_sheet("wallet_balances")
+        all_accounts = ws.col_values(1)
+        try:
+            row_num = all_accounts.index(account) + 1
+            ws.update(f"A{row_num}:C{row_num}", [[account, str(new_balance), str(date.today())]])
+        except ValueError:
+            ws.append_row([account, str(new_balance), str(date.today())])
+    except Exception as e:
+        st.error(f"Error saving balance: {e}")
+
 def fmt(amount):
     try:
         return f"{int(float(amount)):,} DZD".replace(",", " ")
@@ -134,7 +196,7 @@ with st.sidebar:
     st.markdown("## 🎬 Freelance Tracker")
     st.markdown("---")
     page = st.radio("Navigation",
-        ["📊 Dashboard", "👤 Clients", "📁 Projects", "💸 Expenses"],
+        ["📊 Dashboard", "👤 Clients", "📁 Projects", "💰 Wallet"],
         label_visibility="collapsed")
     st.markdown("---")
     _clients  = load("clients")
@@ -142,6 +204,16 @@ with st.sidebar:
     _unpaid   = [p for p in _projects if str(p.get("payment_status","")) == "Unpaid"]
     if _unpaid:
         st.markdown(f"⚠️ **{len(_unpaid)} unpaid invoice{'s' if len(_unpaid)>1 else ''}**")
+    
+    # Wallet totals in sidebar
+    try:
+        _balances = load_balances()
+        _total = sum(_balances.values())
+        st.markdown(f"<small style='color:#666'>💰 Net worth: </small><br><b style='color:#3DAA6D'>{fmt(_total)}</b>", unsafe_allow_html=True)
+        st.markdown("---")
+    except:
+        pass
+    
     st.markdown(f"<small style='color:#666'>👤 {len(_clients)} clients &nbsp;|&nbsp; 📁 {len(_projects)} projects</small>",
                 unsafe_allow_html=True)
 
@@ -153,13 +225,12 @@ if page == "📊 Dashboard":
 
     clients  = load("clients")
     projects = load("projects")
-    expenses = load("expenses")
     unpaid   = [p for p in projects if str(p.get("payment_status","")) == "Unpaid"]
 
-    total_income   = sum(float(p.get("amount",0) or 0) for p in projects if str(p.get("payment_status",""))=="Paid")
-    total_unpaid   = sum(float(p.get("amount",0) or 0) for p in unpaid)
-    total_expenses = sum(float(e.get("amount",0) or 0) for e in expenses)
-    profit         = total_income - total_expenses
+    total_income = sum(float(p.get("amount",0) or 0) for p in projects if str(p.get("payment_status",""))=="Paid")
+    total_unpaid = sum(float(p.get("amount",0) or 0) for p in unpaid)
+    balances     = load_balances()
+    total_wealth = sum(balances.values())
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -176,17 +247,29 @@ if page == "📊 Dashboard":
         </div>""", unsafe_allow_html=True)
     with c3:
         st.markdown(f"""<div class="metric-card">
-            <div class="label">Total Expenses</div>
-            <div class="value" style="color:#F5C842">{fmt(total_expenses)}</div>
-            <div class="sub">All time</div>
+            <div class="label">Cash in Hand</div>
+            <div class="value" style="color:#F5C842">{fmt(balances.get('cash', 0))}</div>
+            <div class="sub">Wallet · Cash</div>
         </div>""", unsafe_allow_html=True)
     with c4:
-        color  = "#3DAA6D" if profit >= 0 else "#E05C5C"
-        margin = f"{(profit/total_income*100):.1f}%" if total_income else "—"
         st.markdown(f"""<div class="metric-card">
-            <div class="label">Net Profit</div>
-            <div class="value" style="color:{color}">{fmt(profit)}</div>
-            <div class="sub">Margin: {margin}</div>
+            <div class="label">Total Net Worth</div>
+            <div class="value" style="color:#7C6AF7">{fmt(total_wealth)}</div>
+            <div class="sub">All accounts combined</div>
+        </div>""", unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # Wallet snapshot on dashboard
+    st.markdown("### 💰 Wallet Snapshot")
+    wc1, wc2, wc3, wc4 = st.columns(4)
+    wallet_cols = [wc1, wc2, wc3, wc4]
+    for i, (acc_key, (icon, label, color)) in enumerate(ACCOUNT_LABELS.items()):
+        bal = balances.get(acc_key, 0)
+        wallet_cols[i].markdown(f"""<div class="wallet-card">
+            <div class="wicon">{icon}</div>
+            <div class="wlabel">{label}</div>
+            <div class="wvalue" style="color:{color}">{fmt(bal)}</div>
         </div>""", unsafe_allow_html=True)
 
     st.markdown("---")
@@ -202,46 +285,53 @@ if page == "📊 Dashboard":
             </div>""", unsafe_allow_html=True)
         st.markdown("---")
 
-    monthly_income   = defaultdict(float)
-    monthly_expenses = defaultdict(float)
+    monthly_income = defaultdict(float)
     for p in projects:
         if str(p.get("payment_status","")) == "Paid":
             monthly_income[month_key(p.get("date",""))] += float(p.get("amount",0) or 0)
-    for e in expenses:
-        monthly_expenses[month_key(e.get("date",""))] += float(e.get("amount",0) or 0)
-    all_months = sorted(m for m in set(list(monthly_income)+list(monthly_expenses)) if m != "Unknown")
+    all_months = sorted(m for m in monthly_income if m != "Unknown")
 
     col_l, col_r = st.columns(2)
     with col_l:
-        st.markdown("### 📈 Monthly Income vs Expenses")
+        st.markdown("### 📈 Monthly Income")
         if all_months:
             fig = go.Figure()
-            fig.add_trace(go.Bar(x=all_months, y=[monthly_income[m] for m in all_months], name="Income", marker_color="#3DAA6D"))
-            fig.add_trace(go.Bar(x=all_months, y=[monthly_expenses[m] for m in all_months], name="Expenses", marker_color="#E05C5C"))
-            fig.update_layout(barmode="group", plot_bgcolor="#0F0F1A", paper_bgcolor="#0F0F1A",
-                font_color="#E8E8F0", legend=dict(bgcolor="#1A1A2E"),
+            fig.add_trace(go.Bar(x=all_months, y=[monthly_income[m] for m in all_months],
+                name="Income", marker_color="#3DAA6D",
+                text=[fmt(monthly_income[m]) for m in all_months],
+                textposition="outside", textfont=dict(size=10, color="#E8E8F0")))
+            fig.update_layout(plot_bgcolor="#0F0F1A", paper_bgcolor="#0F0F1A",
+                font_color="#E8E8F0", showlegend=False,
                 xaxis=dict(gridcolor="#2A2A3E"), yaxis=dict(gridcolor="#2A2A3E"),
-                margin=dict(l=0,r=0,t=10,b=0), height=300)
+                margin=dict(l=0,r=0,t=30,b=0), height=300)
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("Add projects and expenses to see this chart.")
+            st.info("No paid projects yet.")
 
     with col_r:
-        st.markdown("### 📉 Profit Margin Over Time")
-        if all_months:
-            margins = [(monthly_income[m]-monthly_expenses[m])/monthly_income[m]*100 if monthly_income[m] else 0 for m in all_months]
-            fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(x=all_months, y=margins, mode="lines+markers",
-                line=dict(color="#7C6AF7", width=2.5), marker=dict(size=7, color="#7C6AF7"),
-                fill="tozeroy", fillcolor="rgba(124,106,247,0.12)"))
-            fig2.add_hline(y=0, line_dash="dash", line_color="#E05C5C", opacity=0.5)
-            fig2.update_layout(plot_bgcolor="#0F0F1A", paper_bgcolor="#0F0F1A",
-                font_color="#E8E8F0", xaxis=dict(gridcolor="#2A2A3E"),
-                yaxis=dict(gridcolor="#2A2A3E", ticksuffix="%"),
-                margin=dict(l=0,r=0,t=10,b=0), height=300)
+        st.markdown("### 🏦 Account Distribution")
+        if total_wealth > 0:
+            labels = [ACCOUNT_LABELS[k][1] for k in balances]
+            values = list(balances.values())
+            colors = [ACCOUNT_LABELS[k][2] for k in balances]
+            fig2 = go.Figure(go.Pie(
+                labels=labels, values=values,
+                marker=dict(colors=colors),
+                hole=0.55,
+                textinfo="label+percent",
+                textfont=dict(size=12),
+            ))
+            fig2.update_layout(
+                plot_bgcolor="#0F0F1A", paper_bgcolor="#0F0F1A",
+                font_color="#E8E8F0",
+                showlegend=False,
+                margin=dict(l=0,r=0,t=10,b=0), height=300,
+                annotations=[dict(text=fmt(total_wealth), x=0.5, y=0.5,
+                    font_size=13, showarrow=False, font_color="#E8E8F0")]
+            )
             st.plotly_chart(fig2, use_container_width=True)
         else:
-            st.info("Add data to see profit margin trend.")
+            st.info("Set your account balances in the Wallet page.")
 
 # ════════════════════════════════════════════════════════════════
 # CLIENTS
@@ -418,60 +508,231 @@ elif page == "📁 Projects":
                     st.rerun()
 
 # ════════════════════════════════════════════════════════════════
-# EXPENSES
+# WALLET
 # ════════════════════════════════════════════════════════════════
-elif page == "💸 Expenses":
-    st.markdown('<div class="section-title">Expenses</div>', unsafe_allow_html=True)
-    expenses = load("expenses")
+elif page == "💰 Wallet":
+    st.markdown('<div class="section-title">Wallet</div>', unsafe_allow_html=True)
 
-    CATEGORIES = ["Equipment & Gear","Software & Subscriptions","Transport & Fuel",
-                  "Marketing & Ads","Studio / Location Fees","Outsourcing",
-                  "Internet & Phone","Food & Meetings","Taxes & Admin","Miscellaneous"]
+    # Ensure sheets exist
+    try:
+        ensure_wallet_tabs()
+    except Exception as e:
+        st.warning(f"Setting up wallet sheets... ({e})")
 
-    with st.expander("➕ Add Expense", expanded=len(expenses)==0):
-        with st.form("add_expense", clear_on_submit=True):
-            ex1, ex2 = st.columns(2)
-            ex_label  = ex1.text_input("Description *")
-            ex_cat    = ex2.selectbox("Category", CATEGORIES)
-            ex3, ex4  = st.columns(2)
-            ex_amount = ex3.number_input("Amount (DZD)", min_value=0, step=500)
-            ex_date   = ex4.date_input("Date", value=date.today())
-            if st.form_submit_button("Add Expense", use_container_width=True, type="primary"):
-                if not ex_label.strip():
-                    st.error("Description is required.")
-                else:
-                    append_row("expenses", {
-                        "id":str(uuid.uuid4()),"label":ex_label.strip(),
-                        "category":ex_cat,"amount":ex_amount,"date":str(ex_date)
+    balances = load_balances()
+    total_wealth = sum(balances.values())
+
+    # ── TOP: 4 Account Cards ──────────────────────────────────
+    st.markdown("### 🏦 Account Balances")
+    cols = st.columns(4)
+    for i, (acc_key, (icon, label, color)) in enumerate(ACCOUNT_LABELS.items()):
+        bal = balances.get(acc_key, 0)
+        cols[i].markdown(f"""<div class="wallet-card">
+            <div class="wicon">{icon}</div>
+            <div class="wlabel">{label}</div>
+            <div class="wvalue" style="color:{color}">{fmt(bal)}</div>
+        </div>""", unsafe_allow_html=True)
+
+    st.markdown(f"""<div class="metric-card" style="margin-top:4px">
+        <div class="label">Total Net Worth</div>
+        <div class="value" style="color:#E8E8F0">{fmt(total_wealth)}</div>
+        <div class="sub">All accounts combined</div>
+    </div>""", unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── TWO COLUMN ACTIONS ───────────────────────────────────
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        # ── UPDATE BALANCE ──
+        st.markdown("#### ✏️ Update Account Balance")
+        with st.form("update_balance", clear_on_submit=False):
+            acc_options = {v[1]: k for k, v in ACCOUNT_LABELS.items()}
+            sel_acc_label = st.selectbox("Account", list(acc_options.keys()))
+            sel_acc_key   = acc_options[sel_acc_label]
+            current_bal   = balances.get(sel_acc_key, 0)
+            new_bal = st.number_input(
+                f"New balance (currently {fmt(current_bal)})",
+                min_value=0, step=500,
+                value=int(current_bal)
+            )
+            if st.form_submit_button("💾 Set Balance", use_container_width=True, type="primary"):
+                diff = new_bal - current_bal
+                save_balance(sel_acc_key, new_bal)
+                # Log as adjustment transaction
+                try:
+                    append_row("wallet_transactions", {
+                        "id": str(uuid.uuid4()),
+                        "type": "adjustment",
+                        "account": sel_acc_key,
+                        "to_account": "",
+                        "amount": str(abs(diff)),
+                        "description": f"Balance adjustment ({'+' if diff>=0 else '-'}{fmt(abs(diff))})",
+                        "date": str(date.today()),
+                        "created": str(datetime.now()),
                     })
-                    st.success("✅ Expense added!")
+                except:
+                    pass
+                st.success(f"✅ {sel_acc_label} updated to {fmt(new_bal)}")
+                st.rerun()
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── LOG SPENDING ──
+        st.markdown("#### 💸 Log Spending")
+        with st.form("log_spend", clear_on_submit=True):
+            spend_acc_label = st.selectbox("Paid from", list(acc_options.keys()), key="spend_acc")
+            spend_acc_key   = acc_options[spend_acc_label]
+            spend_amount    = st.number_input("Amount (DZD)", min_value=1, step=500, key="spend_amount")
+            spend_desc      = st.text_input("What for?", placeholder="e.g. Transport, Food, Equipment…")
+            spend_date      = st.date_input("Date", value=date.today(), key="spend_date")
+            if st.form_submit_button("➖ Record Spending", use_container_width=True):
+                if not spend_desc.strip():
+                    st.error("Please describe the spending.")
+                else:
+                    current = balances.get(spend_acc_key, 0)
+                    if spend_amount > current:
+                        st.warning(f"⚠️ Not enough in {spend_acc_label} ({fmt(current)}). Recorded anyway.")
+                    new_balance = max(0, current - spend_amount)
+                    save_balance(spend_acc_key, new_balance)
+                    append_row("wallet_transactions", {
+                        "id": str(uuid.uuid4()),
+                        "type": "spend",
+                        "account": spend_acc_key,
+                        "to_account": "",
+                        "amount": str(spend_amount),
+                        "description": spend_desc.strip(),
+                        "date": str(spend_date),
+                        "created": str(datetime.now()),
+                    })
+                    st.success(f"✅ -{fmt(spend_amount)} from {spend_acc_label} → {fmt(new_balance)} remaining")
                     st.rerun()
 
-    if expenses:
-        monthly_by_cat = defaultdict(lambda: defaultdict(float))
-        for e in expenses:
-            monthly_by_cat[month_key(e.get("date",""))][e.get("category","Other")] += float(e.get("amount",0) or 0)
-        all_months = sorted(k for k in monthly_by_cat if k != "Unknown")
-        if all_months:
-            st.markdown("### 📊 Spending by Category")
-            colors = ["#7C6AF7","#5BC4BF","#E05C5C","#F5C842","#3DAA6D","#FF8C69","#87CEEB","#DDA0DD","#98FB98","#F0E68C"]
-            cats_used = sorted(set(e.get("category","") for e in expenses))
-            fig3 = go.Figure()
-            for ci, cat in enumerate(cats_used):
-                fig3.add_trace(go.Bar(x=all_months, y=[monthly_by_cat[m][cat] for m in all_months],
-                    name=cat, marker_color=colors[ci % len(colors)]))
-            fig3.update_layout(barmode="stack", plot_bgcolor="#0F0F1A", paper_bgcolor="#0F0F1A",
-                font_color="#E8E8F0", legend=dict(bgcolor="#1A1A2E", font_size=11),
-                xaxis=dict(gridcolor="#2A2A3E"), yaxis=dict(gridcolor="#2A2A3E"),
-                margin=dict(l=0,r=0,t=10,b=0), height=350)
-            st.plotly_chart(fig3, use_container_width=True)
+    with col_right:
+        # ── LOG INCOME ──
+        st.markdown("#### 💰 Log Income / Deposit")
+        with st.form("log_income", clear_on_submit=True):
+            inc_acc_label = st.selectbox("Into account", list(acc_options.keys()), key="inc_acc")
+            inc_acc_key   = acc_options[inc_acc_label]
+            inc_amount    = st.number_input("Amount (DZD)", min_value=1, step=500, key="inc_amount")
+            inc_desc      = st.text_input("Source / Description", placeholder="e.g. Client payment, Salary…")
+            inc_date      = st.date_input("Date", value=date.today(), key="inc_date")
+            if st.form_submit_button("➕ Record Income", use_container_width=True, type="primary"):
+                if not inc_desc.strip():
+                    st.error("Please add a description.")
+                else:
+                    current = balances.get(inc_acc_key, 0)
+                    new_balance = current + inc_amount
+                    save_balance(inc_acc_key, new_balance)
+                    append_row("wallet_transactions", {
+                        "id": str(uuid.uuid4()),
+                        "type": "income",
+                        "account": inc_acc_key,
+                        "to_account": "",
+                        "amount": str(inc_amount),
+                        "description": inc_desc.strip(),
+                        "date": str(inc_date),
+                        "created": str(datetime.now()),
+                    })
+                    st.success(f"✅ +{fmt(inc_amount)} into {inc_acc_label} → {fmt(new_balance)} total")
+                    st.rerun()
 
-    st.markdown(f"**{len(expenses)} expense records**")
-    for i, e in enumerate(expenses):
-        col_a, col_b, col_c = st.columns([4, 2, 1])
-        col_a.markdown(f"**{e.get('label','')}** &nbsp; <span style='color:#888;font-size:12px'>{e.get('category','')} · {str(e.get('date',''))[:10]}</span>", unsafe_allow_html=True)
-        col_b.markdown(f"<span style='color:#F5C842;font-weight:700'>{fmt(e.get('amount',0))}</span>", unsafe_allow_html=True)
-        if col_c.button("🗑️", key=f"del_exp_{e.get('id',i)}"):
-            delete_row("expenses", str(e["id"]))
-            st.rerun()
-        st.markdown("<hr style='margin:4px 0'>", unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── TRANSFER ──
+        st.markdown("#### 🔄 Transfer Between Accounts")
+        with st.form("transfer", clear_on_submit=True):
+            acc_keys   = list(ACCOUNT_LABELS.keys())
+            acc_labels = [ACCOUNT_LABELS[k][1] for k in acc_keys]
+            from_label = st.selectbox("From", acc_labels, key="tr_from")
+            to_label   = st.selectbox("To",   acc_labels, index=1, key="tr_to")
+            tr_amount  = st.number_input("Amount (DZD)", min_value=1, step=500, key="tr_amount")
+            tr_desc    = st.text_input("Note (optional)", placeholder="e.g. Withdrew cash from Baridi")
+            tr_date    = st.date_input("Date", value=date.today(), key="tr_date")
+            if st.form_submit_button("🔄 Transfer", use_container_width=True):
+                from_key = acc_keys[acc_labels.index(from_label)]
+                to_key   = acc_keys[acc_labels.index(to_label)]
+                if from_key == to_key:
+                    st.error("Source and destination must be different.")
+                else:
+                    from_bal = balances.get(from_key, 0)
+                    to_bal   = balances.get(to_key, 0)
+                    if tr_amount > from_bal:
+                        st.warning(f"⚠️ Not enough in {from_label}. Recorded anyway.")
+                    save_balance(from_key, max(0, from_bal - tr_amount))
+                    save_balance(to_key, to_bal + tr_amount)
+                    desc = tr_desc.strip() or f"Transfer {from_label} → {to_label}"
+                    append_row("wallet_transactions", {
+                        "id": str(uuid.uuid4()),
+                        "type": "transfer",
+                        "account": from_key,
+                        "to_account": to_key,
+                        "amount": str(tr_amount),
+                        "description": desc,
+                        "date": str(tr_date),
+                        "created": str(datetime.now()),
+                    })
+                    st.success(f"✅ Transferred {fmt(tr_amount)}: {from_label} → {to_label}")
+                    st.rerun()
+
+    st.markdown("---")
+
+    # ── TRANSACTION HISTORY ──────────────────────────────────
+    st.markdown("### 📋 Transaction History")
+    try:
+        transactions = load("wallet_transactions")
+        transactions = sorted(transactions, key=lambda x: str(x.get("date","") or ""), reverse=True)
+
+        if not transactions:
+            st.info("No transactions yet. Use the forms above to log spending, income, or transfers.")
+        else:
+            # Filter bar
+            hf1, hf2, hf3 = st.columns(3)
+            tx_type_filter = hf1.selectbox("Type", ["All","spend","income","transfer","adjustment"], label_visibility="collapsed")
+            acc_filter_label = hf2.selectbox("Account", ["All"] + [v[1] for v in ACCOUNT_LABELS.values()], label_visibility="collapsed")
+            limit = hf3.selectbox("Show", ["Last 20","Last 50","All"], label_visibility="collapsed")
+
+            # Apply filters
+            filtered_tx = transactions
+            if tx_type_filter != "All":
+                filtered_tx = [t for t in filtered_tx if t.get("type") == tx_type_filter]
+            if acc_filter_label != "All":
+                acc_filter_key = next(k for k, v in ACCOUNT_LABELS.items() if v[1] == acc_filter_label)
+                filtered_tx = [t for t in filtered_tx if t.get("account") == acc_filter_key or t.get("to_account") == acc_filter_key]
+            if limit == "Last 20":
+                filtered_tx = filtered_tx[:20]
+            elif limit == "Last 50":
+                filtered_tx = filtered_tx[:50]
+
+            TYPE_ICONS = {"spend":"💸","income":"💰","transfer":"🔄","adjustment":"✏️"}
+            TYPE_COLORS = {"spend":"tx-amount-out","income":"tx-amount-in","transfer":"tx-amount-transfer","adjustment":"tx-amount-transfer"}
+
+            for tx in filtered_tx:
+                tx_type = str(tx.get("type",""))
+                icon    = TYPE_ICONS.get(tx_type, "•")
+                acc_key = str(tx.get("account",""))
+                acc_label = ACCOUNT_LABELS.get(acc_key, ("","Unknown","#888"))[1]
+                to_acc_key = str(tx.get("to_account",""))
+                to_label = ACCOUNT_LABELS.get(to_acc_key, ("","","#888"))[1] if to_acc_key else ""
+                amount  = float(tx.get("amount", 0) or 0)
+                sign    = "-" if tx_type == "spend" else ("+" if tx_type == "income" else "")
+                amt_cls = TYPE_COLORS.get(tx_type, "tx-amount-transfer")
+                meta    = acc_label + (f" → {to_label}" if to_label else "") + f" · {str(tx.get('date',''))[:10]}"
+
+                col_tx, col_del = st.columns([12, 1])
+                with col_tx:
+                    st.markdown(f"""<div class="tx-row">
+                        <div class="tx-left">
+                            <div class="tx-desc">{icon} {tx.get('description','')}</div>
+                            <div class="tx-meta">{meta}</div>
+                        </div>
+                        <div class="{amt_cls}">{sign}{fmt(amount)}</div>
+                    </div>""", unsafe_allow_html=True)
+                with col_del:
+                    if st.button("🗑️", key=f"del_tx_{tx.get('id','')}"):
+                        delete_row("wallet_transactions", str(tx["id"]))
+                        st.rerun()
+
+    except Exception as e:
+        st.error(f"Could not load transactions: {e}")
