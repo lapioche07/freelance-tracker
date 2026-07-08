@@ -129,8 +129,8 @@ def update_row(tab, record_id, updated_record):
     except ValueError:
         st.error("Record not found.")
         return
-    ws.update(f"A{row_num}:{chr(64+len(headers))}{row_num}",
-              [[str(updated_record.get(h, "")) for h in headers]])
+    ws.update(values=[[str(updated_record.get(h, "")) for h in headers]],
+              range_name=f"A{row_num}:{chr(64+len(headers))}{row_num}")
 
 def delete_row(tab, record_id):
     ws = get_sheet(tab)
@@ -153,20 +153,33 @@ ACCOUNT_LABELS = {
 def load_balances():
     try:
         ws = get_sheet("wallet_balances")
-        rows = ws.get_all_records()
-        return {r["account"]: float(r.get("balance", 0) or 0) for r in rows}
+        rows = ws.get_all_records()  # skips header automatically
+        result = {"baridi": 0, "personal_bank": 0, "business_bank": 0, "cash": 0}
+        for r in rows:
+            acc = str(r.get("account", "")).strip()
+            if acc in result:
+                try:
+                    result[acc] = float(str(r.get("balance", 0)).strip() or 0)
+                except:
+                    result[acc] = 0
+        return result
     except:
         return {"baridi": 0, "personal_bank": 0, "business_bank": 0, "cash": 0}
 
 def save_balance(account, new_balance):
     try:
         ws = get_sheet("wallet_balances")
-        all_accounts = ws.col_values(1)
+        # col_values(1) includes the header row at index 0
+        # so "baridi" in row 2 of sheet → index 1 in list → row_num = 2 ✓
+        all_accounts = ws.col_values(1)  # ["account", "baridi", "personal_bank", ...]
+        acc_lower = [a.strip().lower() for a in all_accounts]
         try:
-            row_num = all_accounts.index(account) + 1
-            ws.update(f"A{row_num}:C{row_num}", [[account, str(new_balance), str(date.today())]])
+            idx = acc_lower.index(account.lower())  # 0-based index in list
+            row_num = idx + 1                        # 1-based Google Sheets row
+            ws.update(values=[[account, str(new_balance), str(date.today())]], range_name=f"A{row_num}:C{row_num}")
         except ValueError:
-            ws.append_row([account, str(new_balance), str(date.today())])
+            # Account not found — append it
+            ws.append_row([account, str(new_balance), str(date.today())], value_input_option="USER_ENTERED")
     except Exception as e:
         st.error(f"Error saving balance: {e}")
 
@@ -207,7 +220,7 @@ with st.sidebar:
     
     # Wallet totals in sidebar
     try:
-        _balances = load_balances()
+        _balances = st.session_state.get("wallet_balances") or load_balances()
         _total = sum(_balances.values())
         st.markdown(f"<small style='color:#666'>💰 Net worth: </small><br><b style='color:#3DAA6D'>{fmt(_total)}</b>", unsafe_allow_html=True)
         st.markdown("---")
@@ -229,7 +242,7 @@ if page == "📊 Dashboard":
 
     total_income = sum(float(p.get("amount",0) or 0) for p in projects if str(p.get("payment_status",""))=="Paid")
     total_unpaid = sum(float(p.get("amount",0) or 0) for p in unpaid)
-    balances     = load_balances()
+    balances     = st.session_state.get("wallet_balances") or load_balances()
     total_wealth = sum(balances.values())
 
     c1, c2, c3, c4 = st.columns(4)
@@ -519,7 +532,16 @@ elif page == "💰 Wallet":
     except Exception as e:
         st.warning(f"Setting up wallet sheets... ({e})")
 
-    balances = load_balances()
+    # Load from Google Sheets, but override with session_state if we just wrote
+    _balances_from_sheet = load_balances()
+    if "wallet_balances" not in st.session_state:
+        st.session_state["wallet_balances"] = _balances_from_sheet
+    else:
+        # Merge: sheet is source of truth but session overwrites after a write
+        for k in _balances_from_sheet:
+            if k not in st.session_state["wallet_balances"]:
+                st.session_state["wallet_balances"][k] = _balances_from_sheet[k]
+    balances = st.session_state["wallet_balances"]
     total_wealth = sum(balances.values())
 
     # ── TOP: 4 Account Cards ──────────────────────────────────
@@ -560,7 +582,7 @@ elif page == "💰 Wallet":
             if st.form_submit_button("💾 Set Balance", use_container_width=True, type="primary"):
                 diff = new_bal - current_bal
                 save_balance(sel_acc_key, new_bal)
-                # Log as adjustment transaction
+                st.session_state["wallet_balances"][sel_acc_key] = float(new_bal)
                 try:
                     append_row("wallet_transactions", {
                         "id": str(uuid.uuid4()),
@@ -596,6 +618,7 @@ elif page == "💰 Wallet":
                         st.warning(f"⚠️ Not enough in {spend_acc_label} ({fmt(current)}). Recorded anyway.")
                     new_balance = max(0, current - spend_amount)
                     save_balance(spend_acc_key, new_balance)
+                    st.session_state["wallet_balances"][spend_acc_key] = float(new_balance)
                     append_row("wallet_transactions", {
                         "id": str(uuid.uuid4()),
                         "type": "spend",
@@ -625,6 +648,7 @@ elif page == "💰 Wallet":
                     current = balances.get(inc_acc_key, 0)
                     new_balance = current + inc_amount
                     save_balance(inc_acc_key, new_balance)
+                    st.session_state["wallet_balances"][inc_acc_key] = float(new_balance)
                     append_row("wallet_transactions", {
                         "id": str(uuid.uuid4()),
                         "type": "income",
@@ -660,8 +684,12 @@ elif page == "💰 Wallet":
                     to_bal   = balances.get(to_key, 0)
                     if tr_amount > from_bal:
                         st.warning(f"⚠️ Not enough in {from_label}. Recorded anyway.")
-                    save_balance(from_key, max(0, from_bal - tr_amount))
-                    save_balance(to_key, to_bal + tr_amount)
+                    new_from = max(0, from_bal - tr_amount)
+                    new_to   = to_bal + tr_amount
+                    save_balance(from_key, new_from)
+                    save_balance(to_key, new_to)
+                    st.session_state["wallet_balances"][from_key] = float(new_from)
+                    st.session_state["wallet_balances"][to_key]   = float(new_to)
                     desc = tr_desc.strip() or f"Transfer {from_label} → {to_label}"
                     append_row("wallet_transactions", {
                         "id": str(uuid.uuid4()),
